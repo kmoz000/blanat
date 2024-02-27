@@ -1,14 +1,29 @@
-/*
- *  NB: still not sure about the term cheapest city! (cheap by total or by lower cheap_products indexes total<can be translated to cost of living>)
- *  made by love by @kmoz000 and Stack Overflow answers
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
-#define MAX_CITY_NAME_LEN 50
-#define MAX_PRODUCT_NAME_LEN 50
+#include <pthread.h>
+
+#define MAX_CITY_NAME_LEN 20
+#define MAX_PRODUCT_NAME_LEN 20
+#define MAX_PRICE 101.0
+#define TABLE_SIZE 101
+
+typedef struct
+{
+    char name[MAX_CITY_NAME_LEN];
+    double totalPrices;
+} City;
+
+typedef struct
+{
+    City *data;
+    int occupied;
+} HashEntry;
+
+typedef struct
+{
+    HashEntry table[TABLE_SIZE];
+} HashTable;
 
 typedef struct
 {
@@ -16,166 +31,170 @@ typedef struct
     char product[MAX_PRODUCT_NAME_LEN];
     double price;
 } ProductEntry;
+
 typedef struct
 {
-    char name[MAX_CITY_NAME_LEN];
-    double totalPrices;
-} CityEntry;
-void readDataFromFile(const char *filename, ProductEntry **data, int *numEntries)
+    ProductEntry entries[5];
+    int size;
+} CheapestFive;
+
+int compareProductEntry(const void *a, const void *b)
 {
-    FILE *file = fopen(filename, "r");
+    double diff = ((ProductEntry *)a)->price - ((ProductEntry *)b)->price;
+    return (diff > 0) ? (1) : (-1);
+}
+void updateCheapestSix(CheapestFive *cheapestSix, ProductEntry *newEntry)
+{
+    qsort(cheapestSix->entries, cheapestSix->size, sizeof(ProductEntry), compareProductEntry);
+    if (newEntry->price < cheapestSix->entries[cheapestSix->size - 1].price)
+    {
+        cheapestSix->entries[cheapestSix->size - 1] = *newEntry;
+    }
+}
+
+unsigned int hash(char *str)
+{
+    unsigned int hash = 0;
+    while (*str)
+    {
+        hash = (hash * 31) + (*str++);
+    }
+    return hash % TABLE_SIZE;
+}
+
+void initializeHashTable(HashTable *ht)
+{
+    for (int i = 0; i < TABLE_SIZE; i++)
+    {
+        ht->table[i].data = NULL;
+        ht->table[i].occupied = 0;
+    }
+}
+
+int has(HashTable *ht, char *city)
+{
+    unsigned int index = hash(city);
+    if (ht->table[index].occupied && strcmp(ht->table[index].data->name, city) == 0)
+    {
+        return 1;
+    }
+    return 0;
+}
+
+void addToTotal(HashTable *ht, char *city, double price)
+{
+    unsigned int index = hash(city);
+    if (has(ht, city))
+    {
+        if (ht->table[index].data != NULL)
+        {
+            ht->table[index].data->totalPrices += price;
+        }
+    }
+    else
+    {
+        City *newCity = (City *)malloc(sizeof(City));
+        if (newCity == NULL)
+        {
+            fprintf(stderr, "Memory allocation failed\n");
+            exit(EXIT_FAILURE);
+        }
+        strcpy(newCity->name, city);
+        newCity->totalPrices = price;
+        ht->table[index].data = newCity;
+        ht->table[index].occupied = 1;
+    }
+}
+CheapestFive newFiveCheapProducts()
+{
+    CheapestFive cheapestProducts;
+    ProductEntry initialEntries[] = {
+        {"", "", MAX_PRICE},
+        {"", "", MAX_PRICE},
+        {"", "", MAX_PRICE},
+        {"", "", MAX_PRICE},
+        {"", "", MAX_PRICE}};
+
+    for (int i = 0; i < 5; i++)
+    {
+        cheapestProducts.entries[i] = initialEntries[i];
+    }
+    return cheapestProducts;
+}
+typedef struct
+{
+    FILE *file;
+    HashTable *cityHashTable;
+    CheapestFive *cheapestProducts;
+} ThreadData;
+
+void *readDataThread(void *arg)
+{
+    ThreadData *threadData = (ThreadData *)arg;
+
+    ProductEntry newTempData;
+    while (fscanf(threadData->file, "%49[^,],%49[^,],%lf\n", newTempData.city, newTempData.product, &newTempData.price) == 3)
+    {
+        addToTotal(threadData->cityHashTable, newTempData.city, newTempData.price);
+        updateCheapestSix(threadData->cheapestProducts, &newTempData);
+    }
+
+    pthread_exit(NULL);
+}
+void readDataFromFile(HashTable *cityHashTable, CheapestFive *cheapestProducts, int numThreads)
+{
+    FILE *file = fopen("../../input.txt", "r");
     if (!file)
     {
         perror("Error opening file");
         exit(EXIT_FAILURE);
     }
 
-    int count = 0;
-    ProductEntry *tempData = NULL;
-    while (1)
+    pthread_t threads[numThreads];
+    ThreadData threadData[numThreads];
+
+    for (int i = 0; i < numThreads; i++)
     {
-        ProductEntry *newTempData = realloc(tempData, (count + 1) * sizeof(ProductEntry));
-        if (!newTempData)
+        threadData[i].file = file;
+        threadData[i].cityHashTable = cityHashTable;
+        threadData[i].cheapestProducts = cheapestProducts;
+
+        if (pthread_create(&threads[i], NULL, readDataThread, &threadData[i]) != 0)
         {
-            perror("Memory allocation error");
-            free(newTempData);
-            return;
+            perror("Thread creation failed");
+            fclose(file);
+            exit(EXIT_FAILURE);
         }
-        else
-        {
-            tempData = newTempData;
-        }
-        if (fscanf(file, "%49[^,],%49[^,],%lf\n", tempData[count].city, tempData[count].product, &tempData[count].price) != 3)
-        {
-            break;
-        }
-        count++;
     }
-    *numEntries = count;
-    *data = tempData;
+
+    for (int i = 0; i < numThreads; i++)
+    {
+        pthread_join(threads[i], NULL);
+    }
+
     fclose(file);
 }
-
-int compareProducts(const void *a, const void *b)
+int main()
 {
-    return ((ProductEntry *)a)->price - ((ProductEntry *)b)->price;
-}
-
-void sortProducts(ProductEntry *data, int numEntries)
-{
-    qsort(data, numEntries, sizeof(ProductEntry), compareProducts);
-}
-int compareCitiesByTotalPrices(const void *a, const void *b)
-{
-    return (int)(((CityEntry *)a)->totalPrices - ((CityEntry *)b)->totalPrices);
-}
-void sortCitiesByTotalPrices(CityEntry *cities, int numCities)
-{
-    qsort(cities, numCities, sizeof(CityEntry), compareCitiesByTotalPrices);
-}
-void calculateTotalCostByCity(ProductEntry *data, int numEntries, CityEntry **cities, int *numCities)
-{
-    // Assuming that cities num is less than 101
-    char cityNames[101][MAX_CITY_NAME_LEN];
-    double totalCosts[1000] = {0};
-
-    for (int i = 0; i < numEntries; i++)
+    CheapestFive cheapestProducts = newFiveCheapProducts();
+    HashTable cityHashTable;
+    initializeHashTable(&cityHashTable);
+    cheapestProducts.size = 5;
+    int numThreads = 4;
+    readDataFromFile(&cityHashTable, &cheapestProducts, numThreads);
+    for (int i = 0; i < cheapestProducts.size; i++)
     {
-        int cityIndex = -1;
-        for (int j = 0; j < *numCities; j++)
+        if (strlen(cheapestProducts.entries[i].city) > 0)
         {
-            if (strcmp(data[i].city, cityNames[j]) == 0)
-            {
-                cityIndex = j;
-                break;
-            }
+            printf("%s, %s, %.2f\n", cheapestProducts.entries[i].city, cheapestProducts.entries[i].product, cheapestProducts.entries[i].price);
         }
-
-        if (cityIndex == -1)
+    }
+    for (int i = 0; i < TABLE_SIZE; i++)
+    {
+        if (cityHashTable.table[i].occupied)
         {
-            cityIndex = *numCities;
-            strncpy(cityNames[*numCities], data[i].city, MAX_CITY_NAME_LEN);
-            (*numCities)++;
+            free(cityHashTable.table[i].data);
         }
-        totalCosts[cityIndex] += data[i].price;
     }
-    *cities = malloc(*numCities * sizeof(CityEntry));
-    if (!*cities)
-    {
-        perror("Memory allocation error");
-        exit(EXIT_FAILURE);
-    }
-    for (int i = 0; i < *numCities; i++)
-    {
-        strncpy((*cities)[i].name, cityNames[i], MAX_CITY_NAME_LEN);
-        (*cities)[i].totalPrices = totalCosts[i];
-    }
-}
-int main(int argc, char *argv[])
-{
-    if (argc != 3 || (strcmp(argv[1], "-i") != 0 && strcmp(argv[1], "--input") != 0))
-    {
-        printf("Usage: %s -i/--input <filename>\n", argv[0]);
-        return EXIT_FAILURE;
-    }
-
-    const char *filename = argv[2];
-    clock_t start_time = clock();
-    int numEntries;
-    ProductEntry *data;
-    int numCities = 0;
-    CityEntry *cities;
-
-    readDataFromFile(filename, &data, &numEntries);
-    sortProducts(data, numEntries);
-    sortCitiesByTotalPrices(cities, numCities);
-    calculateTotalCostByCity(data, numEntries, &cities, &numCities);
-
-    FILE *outputFile = fopen("output.txt", "w");
-    if (outputFile == NULL)
-    {
-        perror("Error opening file");
-        return 1;
-    }
-
-    printf("Cheapest city:\n");
-    printf("%s %.2lf\n", cities[0].name, cities[0].totalPrices);
-    fprintf(outputFile, "%s %.2lf\n", cities[0].name, cities[0].totalPrices);
-    printf("Cheapest 5 products across all cities:\n");
-    for (int i = 0; i < numEntries && i < 5; i++)
-    {
-        printf("%s %.2lf\n", data[i].product, data[i].price);
-        fprintf(outputFile, "%s %.2lf\n", data[i].product, data[i].price);
-    }
-    clock_t total_cost_time = clock();
-    double total_cost_elapsed = ((double)(total_cost_time - start_time)) / CLOCKS_PER_SEC;
-    fclose(outputFile);
-    free(data);
-    free(cities);
-    printf("Time taken to calculate (%d) Entries: %f seconds\n", numEntries, total_cost_elapsed);
     return 0;
 }
-/*
-Results i got from the 1 000 000 entries in repo (input):
-    Cheapest city:
-    Khemisset 499672.12
-    Cheapest 5 products across all cities:
-    Goji_Berry 1.33
-    Date 1.07
-    Okra 1.28
-    Plantain 1.27
-    Garlic 1.01
-    Time taken to calculate (1000000) Entries: 0.853328 seconds
-
-Device:
-  Processor Name:	Quad-Core Intel Core i7
-  Processor Speed:	2.2 GHz
-  Number of Processors:	1
-  Total Number of Cores:	4
-  L2 Cache (per Core):	256 KB
-  L3 Cache:	6 MB
-  Hyper-Threading Technology:	Enabled
-  Memory:	16 GB
-
-Estimation for 1 billion enteries after mutiple runs: ~14min13s (±15s)
-*/
